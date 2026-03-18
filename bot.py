@@ -2,6 +2,7 @@ import os
 import logging
 import sqlite3
 import urllib.request
+import urllib.parse
 import json
 from datetime import datetime
 from dotenv import load_dotenv
@@ -43,6 +44,26 @@ def get_rate(from_currency: str, to_currency: str) -> str:
     except Exception as e:
         logging.warning(f"Rate fetch failed: {e}")
     return None
+
+
+def post_to_facebook(text: str) -> bool:
+    """Post text to Facebook Page."""
+    try:
+        fb_token = os.getenv("FB_PAGE_TOKEN")
+        fb_page_id = os.getenv("FB_PAGE_ID")
+        if not fb_token or not fb_page_id:
+            logging.warning("FB credentials not set")
+            return False
+        url = f"https://graph.facebook.com/v25.0/{fb_page_id}/feed"
+        data = urllib.parse.urlencode({"message": text, "access_token": fb_token}).encode()
+        req = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+            logging.info(f"FB post created: {result.get('id')}")
+            return True
+    except Exception as e:
+        logging.error(f"FB post failed: {e}")
+        return False
 
 
 def init_db():
@@ -687,6 +708,9 @@ async def publish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=CHANNEL_ID, text=post)
     except Exception as e:
         logging.error(f"Failed to post to channel: {e}")
+
+    # Post to Facebook Page
+    post_to_facebook(post)
 
     await query.edit_message_text(
         f"✅ *AD POSTED!*\n\nID: #{ad_id}\nChannel: @fifoexchange",
