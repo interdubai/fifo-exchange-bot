@@ -1,3 +1,4 @@
+cat > bot.py << 'EOF'
 import os
 import logging
 import sqlite3
@@ -84,8 +85,13 @@ async def register_user(update: Update):
     conn.close()
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await register_user(update)
-    user_id = update.effective_user.id
+    """Показать профиль пользователя"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    target_user_id = user_id
+    target_username = None
     
     if context.args:
         target_username = context.args[0].replace("@", "")
@@ -95,19 +101,19 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = c.fetchone()
         conn.close()
         if result:
-            user_id = result[0]
+            target_user_id = result[0]
         else:
-            await update.message.reply_text(f"❌ User @{target_username} not found")
+            await query.message.reply_text(f"❌ User @{target_username} not found")
             return
     
     conn = sqlite3.connect('fifo.db')
     c = conn.cursor()
     c.execute('''SELECT username, first_name, registered_at, total_ads, 
-                        rating_total, rating_count FROM users WHERE user_id = ?''', (user_id,))
+                        rating_total, rating_count FROM users WHERE user_id = ?''', (target_user_id,))
     user = c.fetchone()
     
     if not user:
-        await update.message.reply_text("❌ Profile not found")
+        await query.message.reply_text("❌ Profile not found")
         conn.close()
         return
     
@@ -119,7 +125,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  FROM reviews r
                  JOIN users u ON r.from_user_id = u.user_id
                  WHERE r.to_user_id = ? 
-                 ORDER BY r.created_at DESC LIMIT 3''', (user_id,))
+                 ORDER BY r.created_at DESC LIMIT 3''', (target_user_id,))
     reviews = c.fetchall()
     conn.close()
     
@@ -142,43 +148,75 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text += "\nNo reviews yet"
     
-    await update.message.reply_text(text, parse_mode="Markdown")
+    # Кнопка для отзыва (только если смотрим чужой профиль)
+    keyboard = []
+    if target_user_id != user_id:
+        keyboard.append([InlineKeyboardButton("⭐ Оставить отзыв", callback_data=f"review_{target_user_id}")])
+    
+    await query.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def review(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("Usage: /review @username rating [comment]")
+async def start_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начать процесс отзыва"""
+    query = update.callback_query
+    await query.answer()
+    
+    target_user_id = int(query.data.replace("review_", ""))
+    user_sessions[query.from_user.id] = {
+        "step": "review_rating",
+        "target_user_id": target_user_id
+    }
+    
+    # Клавиатура для выбора рейтинга
+    keyboard = []
+    row = []
+    for i in range(1, 11):
+        row.append(InlineKeyboardButton(str(i), callback_data=f"rating_{i}"))
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    
+    await query.edit_message_text(
+        "⭐ *Оцените пользователя от 1 до 10*\n\nВыберите оценку:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def review_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить оценку"""
+    query = update.callback_query
+    await query.answer()
+    
+    rating = int(query.data.replace("rating_", ""))
+    uid = query.from_user.id
+    
+    if uid in user_sessions and user_sessions[uid].get("step") == "review_rating":
+        user_sessions[uid]["rating"] = rating
+        user_sessions[uid]["step"] = "review_comment"
+        
+        await query.edit_message_text(
+            f"⭐ Оценка: {rating}/10\n\n📝 Напишите комментарий к отзыву (или отправьте /skip чтобы пропустить):",
+            parse_mode="Markdown"
+        )
+
+async def review_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить комментарий и сохранить отзыв"""
+    uid = update.effective_user.id
+    text = update.message.text
+    
+    if uid not in user_sessions or user_sessions[uid].get("step") != "review_comment":
         return
     
-    target_username = args[0].replace("@", "")
-    try:
-        rating = int(args[1])
-        if rating < 1 or rating > 10:
-            await update.message.reply_text("❌ Rating must be 1-10")
-            return
-    except:
-        await update.message.reply_text("❌ Rating must be a number 1-10")
-        return
+    comment = text if text != "/skip" else ""
+    data = user_sessions[uid]
     
-    comment = " ".join(args[2:]) if len(args) > 2 else ""
+    target_id = data["target_user_id"]
+    rating = data["rating"]
+    from_id = uid
     
     conn = sqlite3.connect('fifo.db')
     c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE username = ?", (target_username,))
-    target = c.fetchone()
-    
-    if not target:
-        conn.close()
-        await update.message.reply_text(f"❌ User @{target_username} not found")
-        return
-    
-    target_id = target[0]
-    from_id = update.effective_user.id
-    
-    if from_id == target_id:
-        conn.close()
-        await update.message.reply_text("❌ You cannot review yourself")
-        return
     
     c.execute('''INSERT INTO reviews (from_user_id, to_user_id, rating, comment, created_at)
                  VALUES (?, ?, ?, ?, ?)''',
@@ -193,7 +231,41 @@ async def review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
     
-    await update.message.reply_text(f"✅ Review added for @{target_username}")
+    await update.message.reply_text("✅ Отзыв успешно добавлен!")
+    del user_sessions[uid]
+
+async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пропустить комментарий"""
+    uid = update.effective_user.id
+    if uid in user_sessions and user_sessions[uid].get("step") == "review_comment":
+        await review_comment(update, context)
+
+async def my_ads(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать объявления пользователя"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    
+    conn = sqlite3.connect('fifo.db')
+    c = conn.cursor()
+    c.execute('''SELECT id, from_country, from_city, to_country, to_city,
+                        give_currency, get_currency, amount, duration, status, created_at
+                 FROM ads WHERE user_id = ? ORDER BY created_at DESC LIMIT 10''', (user_id,))
+    ads = c.fetchall()
+    conn.close()
+    
+    if not ads:
+        await query.message.reply_text("📭 You have no ads yet.")
+        return
+    
+    text = "📋 *YOUR ADS*\n\n"
+    for ad in ads:
+        ad_id, from_c, from_city, to_c, to_city, give_c, get_c, amount, dur, status, created = ad
+        date = datetime.fromisoformat(created).strftime('%d %b')
+        text += f"#{ad_id} {from_city}→{to_city} | {amount} {give_c} ➔ {get_c} | {dur} | {status}\n"
+    
+    await query.message.reply_text(text, parse_mode="Markdown")
 
 async def find_matches(ad_id, context):
     conn = sqlite3.connect('fifo.db')
@@ -272,6 +344,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📢 POST AD", callback_data="post_ad")],
         [InlineKeyboardButton("👤 PROFILE", callback_data="profile")],
+        [InlineKeyboardButton("📋 MY ADS", callback_data="my_ads")],
         [InlineKeyboardButton("🛡️ SAFETY", callback_data="safety")],
         [InlineKeyboardButton("💬 FEEDBACK", callback_data="feedback")],
         [InlineKeyboardButton("💰 DONATION", callback_data="donation")]
@@ -350,6 +423,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📢 POST AD", callback_data="post_ad")],
         [InlineKeyboardButton("👤 PROFILE", callback_data="profile")],
+        [InlineKeyboardButton("📋 MY ADS", callback_data="my_ads")],
         [InlineKeyboardButton("🛡️ SAFETY", callback_data="safety")],
         [InlineKeyboardButton("💬 FEEDBACK", callback_data="feedback")],
         [InlineKeyboardButton("💰 DONATION", callback_data="donation")]
@@ -359,11 +433,6 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
-async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await profile(update, context)
 
 async def post_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -436,6 +505,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if uid in user_sessions and user_sessions[uid].get("step") == "feedback":
         await handle_feedback(update, context)
+        return
+    
+    if uid in user_sessions and user_sessions[uid].get("step") == "review_comment":
+        await review_comment(update, context)
         return
     
     if uid not in user_sessions:
@@ -536,7 +609,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "post_ad":
         await post_ad(update, context)
     elif data == "profile":
-        await profile_button(update, context)
+        await profile(update, context)
+    elif data == "my_ads":
+        await my_ads(update, context)
     elif data == "safety":
         await safety(update, context)
     elif data == "feedback":
@@ -545,6 +620,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await donation(update, context)
     elif data == "menu":
         await menu(update, context)
+    elif data.startswith("review_"):
+        await start_review(update, context)
+    elif data.startswith("rating_"):
+        await review_rating(update, context)
     elif data.startswith("from_"):
         await from_country(update, context)
     elif data.startswith("fromcity_"):
@@ -567,13 +646,15 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("profile", profile))
-    app.add_handler(CommandHandler("review", review))
+    app.add_handler(CommandHandler("myads", my_ads))
+    app.add_handler(CommandHandler("skip", skip_comment))
     
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    print("🚀 ИСПРАВЛЕННАЯ ВЕРСИЯ")
+    print("🚀 ПОЛНАЯ ВЕРСИЯ С MY ADS И ОТЗЫВАМИ")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+EOF
