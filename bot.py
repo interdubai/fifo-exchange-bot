@@ -1,6 +1,8 @@
 import os
 import logging
 import sqlite3
+import urllib.request
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,6 +15,34 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 FEEDBACK_CHANNEL_ID = int(os.getenv("FEEDBACK_CHANNEL_ID", "-1003534656490"))
 
 logging.basicConfig(level=logging.INFO)
+
+EXCHANGE_API_KEY = "a248522f81d454d9e7ed2880"
+
+def get_rate(from_currency: str, to_currency: str) -> str:
+    """Get exchange rate between two currencies. Returns formatted string."""
+    try:
+        # Normalize USDT → USD
+        fc = "USD" if from_currency == "USDT" else from_currency
+        tc = "USD" if to_currency == "USDT" else to_currency
+
+        if fc == tc:
+            return None
+
+        url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_API_KEY}/pair/{fc}/{tc}"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read())
+
+        if data.get("result") == "success":
+            rate = data["conversion_rate"]
+            # Format nicely
+            if rate >= 1:
+                rate_str = f"{rate:.2f}"
+            else:
+                rate_str = f"{rate:.6f}"
+            return f"1 {from_currency} = {rate_str} {to_currency}"
+    except Exception as e:
+        logging.warning(f"Rate fetch failed: {e}")
+    return None
 
 
 def init_db():
@@ -421,6 +451,14 @@ async def find_matches(ad_id, context):
         percent = int(min(amount, match_amount) / max(amount, match_amount) * 100) \
             if amount > 0 and match_amount > 0 else 0
 
+        # Get exchange rate
+        rate_str = get_rate(give_curr, get_curr)
+        rate_line = (
+            f"\n💱 Rate: {rate_str}\n"
+            f"📊 Check on xe.com for exact rate"
+            if rate_str else ""
+        )
+
         # Notify ad poster about the match
         msg1 = (
             f"🎯 *MATCH FOUND!* ({percent}% match)\n\n"
@@ -428,7 +466,8 @@ async def find_matches(ad_id, context):
             f"📍 FROM: {match[3]} / {match[4]}\n"
             f"💰 GIVE: {match_amount} {match[7]}\n"
             f"🎯 TO: {match[5]} / {match[6]}\n"
-            f"💵 GET: {match[8]}\n\n"
+            f"💵 GET: {match[8]}"
+            f"{rate_line}\n\n"
             f"👤 @{match_uname}\n"
             f"📞 Contact: {match_contact}"
         )
@@ -438,13 +477,20 @@ async def find_matches(ad_id, context):
             pass
 
         # Notify matched user
+        rate_str2 = get_rate(match[7], match[8])
+        rate_line2 = (
+            f"\n💱 Rate: {rate_str2}\n"
+            f"📊 Check on xe.com for exact rate"
+            if rate_str2 else ""
+        )
         msg2 = (
             f"🎯 *MATCH FOUND!* ({percent}% match)\n\n"
             f"Your ad #{match_id} ↔ #{ad_id}\n\n"
             f"📍 FROM: {from_country} / {from_city}\n"
             f"💰 GIVE: {amount} {give_curr}\n"
             f"🎯 TO: {to_country} / {to_city}\n"
-            f"💵 GET: {get_curr}\n\n"
+            f"💵 GET: {get_curr}"
+            f"{rate_line2}\n\n"
             f"👤 @{username}\n"
             f"📞 Contact: {contact}"
         )
