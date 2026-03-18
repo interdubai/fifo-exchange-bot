@@ -684,7 +684,7 @@ async def publish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=post, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=CHANNEL_ID, text=post)
     except Exception as e:
         logging.error(f"Failed to post to channel: {e}")
 
