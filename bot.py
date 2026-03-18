@@ -454,8 +454,8 @@ async def find_matches(ad_id, context):
         # Get exchange rate
         rate_str = get_rate(give_curr, get_curr)
         rate_line = (
-            f"\n💱 Rate: {rate_str}\n"
-            f"📊 Check on xe.com for exact rate"
+            f"\n💱 Ref. rate: {rate_str} (interbank)\n"
+            f"⚠️ Street rate may differ — verify on xe.com"
             if rate_str else ""
         )
 
@@ -479,8 +479,8 @@ async def find_matches(ad_id, context):
         # Notify matched user
         rate_str2 = get_rate(match[7], match[8])
         rate_line2 = (
-            f"\n💱 Rate: {rate_str2}\n"
-            f"📊 Check on xe.com for exact rate"
+            f"\n💱 Ref. rate: {rate_str2} (interbank)\n"
+            f"⚠️ Street rate may differ — verify on xe.com"
             if rate_str2 else ""
         )
         msg2 = (
