@@ -1,4 +1,3 @@
-cat > bot.py << 'EOF'
 import os
 import logging
 import sqlite3
@@ -657,4 +656,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-EOF
