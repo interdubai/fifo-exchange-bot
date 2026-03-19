@@ -688,19 +688,25 @@ async def publish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from_city_tag = data['from_city'].lower().replace(' ', '')
     to_city_tag   = data['to_city'].lower().replace(' ', '')
 
+    # Get exchange rate for post
+    rate_str = get_rate(data['give_currency'], data['get_currency'])
+    rate_line = f"💱 Ref. rate: {rate_str} (interbank)\n⚠️ Street rate may differ — verify on xe.com\n\n" if rate_str else ""
+
+    amount_formatted = f"{data['amount']:,.0f}" if data['amount'] == int(data['amount']) else f"{data['amount']:,.2f}"
+
     post = (
-        f"#{give_tag} #{get_tag} #{from_city_tag} #{to_city_tag} #fifo\n\n"
-        f"🔄 *FIFO DEAL #{ad_id}*\n\n"
-        f"📍 FROM: {data['from_country']} / {data['from_city']}\n"
-        f"💰 GIVE: {data['amount']} {data['give_currency']}\n"
-        f"🎯 TO: {data['to_country']} / {data['to_city']}\n"
-        f"💵 GET: {data['get_currency']}\n\n"
-        f"👤 @{data['username']}\n"
-        f"📱 WhatsApp: {data['contact']}\n"
-        f"⏱️ {data['duration']}\n\n"
+        f"#{give_tag} #{get_tag} #{from_city_tag} #{to_city_tag} #fifo #p2p\n\n"
+        f"💱 P2P DEAL #{ad_id}\n\n"
+        f"👤 @{data['username']} wants to exchange:\n\n"
+        f"📤 GIVING: {amount_formatted} {data['give_currency']} in {data['from_city']} ({data['from_country']})\n"
+        f"📥 GETTING: {data['get_currency']} in {data['to_city']} ({data['to_country']})\n\n"
+        f"{rate_line}"
+        f"⏱️ Available for: {data['duration']}\n"
+        f"📱 WhatsApp: {data['contact']}\n\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🤝 Interested? Contact directly\n"
         f"⚠️ Meet in public • Verify ID • Your risk\n"
-        f"💰 Post your deal → @fifoexchange_bot\n"
+        f"🤖 Posted via @fifoexchange_bot\n"
         f"━━━━━━━━━━━━━━━━━━━"
     )
 
