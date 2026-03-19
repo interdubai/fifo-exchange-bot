@@ -89,6 +89,7 @@ def init_db():
                   give_currency TEXT,
                   get_currency TEXT,
                   amount REAL,
+                  desired_rate REAL,
                   contact TEXT,
                   duration TEXT,
                   status TEXT DEFAULT 'active',
@@ -100,6 +101,12 @@ def init_db():
                   rating INTEGER,
                   comment TEXT,
                   created_at TIMESTAMP)''')
+    # Add desired_rate column to existing databases
+    try:
+        c.execute('ALTER TABLE ads ADD COLUMN desired_rate REAL DEFAULT 0')
+        conn.commit()
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -666,13 +673,14 @@ async def publish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c = conn.cursor()
     c.execute('''INSERT INTO ads
                  (user_id, username, from_country, from_city, to_country, to_city,
-                  give_currency, get_currency, amount, contact, duration, status, created_at)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                  give_currency, get_currency, amount, desired_rate, contact, duration, status, created_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
               (uid, data["username"],
                data["from_country"], data["from_city"],
                data["to_country"], data["to_city"],
                data["give_currency"], data["get_currency"],
-               data["amount"], data["contact"],
+               data["amount"], data.get("desired_rate", 0),
+               data["contact"],
                data["duration"], 'active', datetime.now()))
     ad_id = c.lastrowid
     c.execute('UPDATE users SET total_ads = total_ads + 1 WHERE user_id = ?', (uid,))
@@ -751,13 +759,38 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if amount <= 0:
                 raise ValueError
             user_sessions[uid]["amount"] = amount
+            user_sessions[uid]["step"] = "desired_rate"
+            # Get current interbank rate as reference
+            give = user_sessions[uid].get("give_currency", "")
+            get = user_sessions[uid].get("get_currency", "")
+            rate_str = get_rate(give, get)
+            rate_hint = f"\n💱 Interbank ref: {rate_str}" if rate_str else ""
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            kb = [[InlineKeyboardButton("📊 Use interbank rate", callback_data="use_interbank_rate")]]
+            await update.message.reply_text(
+                f"💰 *What rate do you want?*{rate_hint}\n\n"
+                f"Enter how much {get} you want per 1 {give}\n"
+                f"(e.g. if 1 AED = 375 NGN, enter 375)\n\n"
+                f"Or use the interbank rate as reference:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Please enter a valid positive number")
+
+    elif step == "desired_rate":
+        try:
+            desired_rate = float(text.replace(",", "").replace(" ", ""))
+            if desired_rate <= 0:
+                raise ValueError
+            user_sessions[uid]["desired_rate"] = desired_rate
             user_sessions[uid]["step"] = "contact"
             await update.message.reply_text(
                 "📞 *WhatsApp number?* (e.g. +971501234567)",
                 parse_mode="Markdown"
             )
         except ValueError:
-            await update.message.reply_text("❌ Please enter a valid positive number")
+            await update.message.reply_text("❌ Please enter a valid rate number")
 
     elif step == "contact":
         user_sessions[uid]["contact"] = text
@@ -769,6 +802,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(kb)
         )
+
+
+async def use_interbank_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    if uid not in user_sessions:
+        return
+    give = user_sessions[uid].get("give_currency", "")
+    get  = user_sessions[uid].get("get_currency", "")
+    rate_str = get_rate(give, get)
+    if rate_str:
+        # Parse the rate number from string like "1 AED = 370.05 NGN"
+        import re
+        m = re.search(r'=\s*([\d.]+)', rate_str)
+        if m:
+            user_sessions[uid]["desired_rate"] = float(m.group(1))
+            user_sessions[uid]["step"] = "contact"
+            await query.edit_message_text(
+                f"✅ Rate set: {rate_str} (interbank)\n\n📞 *WhatsApp number?* (e.g. +971501234567)",
+                parse_mode="Markdown"
+            )
+            return
+    await query.edit_message_text("❌ Could not fetch rate. Please enter manually:")
+    user_sessions[uid]["step"] = "desired_rate"
 
 
 # ─────────────────────────────────────────────
@@ -787,6 +845,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "donation":       await donation(update, context)
     elif data == "menu":           await menu(update, context)
     elif data == "publish":        await publish(update, context)
+    elif data == "use_interbank_rate": await use_interbank_rate(update, context)
     elif data.startswith("review_"):    await start_review(update, context)
     elif data.startswith("rating_"):    await review_rating(update, context)
     elif data.startswith("from_"):      await from_country(update, context)
